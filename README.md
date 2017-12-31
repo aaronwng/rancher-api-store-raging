@@ -1,7 +1,7 @@
 Rancher API Store
 ===============
 
-Storage adapter to [compatible APIs](http://github.com/rancher/api-spec).
+Storage adapter to [API Spec compatible APIs](http://github.com/rancher/api-spec).
 
 ## Usage
 
