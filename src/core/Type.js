@@ -1,6 +1,6 @@
-import merge from 'lodash/merge'
 import Serializable from './Serializable'
 import {normalizeType} from '../utils/normalize'
+import { copyHeaders } from '../utils/apply-headers'
 import urlOptions from '../utils/urlOptions'
 
 class Type extends Serializable {
@@ -49,43 +49,40 @@ class Type extends Serializable {
   }
 
   // unionArrays=true will append the new values to the existing ones instead of overwriting.
-  merge(newData, unionArrays) {
-    if (typeof newData.eachKeys === 'function') {
-      newData.eachKeys((v, k) => {
-        if (newData.hasOwnProperty(k)) {
-          const curVal = this[k]
-          if (unionArrays && Array.isArray(curVal) && Array.isArray(v) ) {
-            curVal.concat(v)
-          } else {
-            this[k] = v
-          }
+  merge(newData, unionArrays=false) {
+    var self = this;
+
+    newData.eachKeys(function(v, k) {
+      if ( newData.hasOwnProperty(k) ) {
+        var curVal = self[k];
+        if ( unionArrays && Array.isArray(curVal) && Array.isArray(v) ) {
+          curVal.addObjects(v);
+        } else {
+          self[k] =  v;
         }
-      })
-    } else {
-      Object.entries(newData).forEach(([k, v]) => {
-        this[k] = v
-      })
-    }
-
-    return this
-  }
-
-  replaceWith(newData) {
-    // Add/replace values that are in newData
-    newData.eachKeys((v, k) => {
-      this[k] = v
-    })
-
-    // Remove values that are in current but not new.
-    const newKeys = newData.allKeys()
-    this.eachKeys((v, k) => {
-      // If the key is a valid link name and
-      if (newKeys.indexOf(k) === -1 && !this.hasLink(k)) {
-        this[k] = undefined
       }
     });
 
-    return this
+    return self;
+  }
+
+  replaceWith(newData) {
+    var self = this;
+    // Add/replace values that are in newData
+    newData.eachKeys(function(v, k) {
+      self[k] = v;
+    });
+
+    // Remove values that are in current but not new.
+    var newKeys = newData.allKeys();
+    this.eachKeys(function(v, k) {
+      // If the key is a valid link name and
+      if ( newKeys.indexOf(k) === -1 && !this.hasLink(k) ) {
+        self[k] = undefined
+      }
+    });
+
+    return self;
   }
 
   clone() {
@@ -122,7 +119,8 @@ class Type extends Serializable {
       opt.headers = {}
     }
     const headers = {}
-    merge(headers, this.constructor.headers, opt.headers)
+    copyHeaders(this.constructor.headers, opt.headers);
+    copyHeaders(this.headers, opt.headers);
     return this.store.request({...opt, headers})
   }
 
@@ -168,30 +166,27 @@ class Type extends Serializable {
     })
   }
 
-  doAction(name, opt = {}) {
-    if (name === 'delete' || name === 'remove') {
-      return this.delete(opt)
-    }
-
-    if (name === 'save') {
-      this.save(opt)
-    }
-
-    const url = this.actionFor(name);
+  doAction(name, data, opt) {
+    var url = this.actionFor(name);
     if (!url) {
-      return Promise.reject(new Error(`Unknown action: ${name}`))
+      return Promise.reject(new Error('Unknown action: ' + name));
     }
 
-    opt.method = 'POST'
-    opt.url = opt.url || url
+    opt = opt || {};
+    opt.method = 'POST';
+    opt.url = opt.url || url;
+    if ( data ) {
+      opt.data = data;
+    }
 
     // Note: The response object may or may not be this same object, depending on what the action returns.
-    return this.request(opt)
+    return this.request(opt);
   }
 
-  save(opt = {}) {
+  save(opt) {
     const self = this
     const store = this.store
+    opt = opt || {};
 
     const id = this.id
     const type = normalizeType(this.type)
@@ -209,20 +204,24 @@ class Type extends Serializable {
       opt.url = opt.url || type
     }
 
-    const json = this.serialize()
-    // Don't send included link maps/arrays
-    Object.keys(json.links || {}).forEach((k) => {
-      delete json[k]
-    })
-    delete json['links']
-    delete json['actions']
+    if ( opt.qp ) {
+      for (var k in opt.qp ) {
+        opt.url += (opt.url.indexOf('?') >= 0 ? '&' : '?') + encodeURIComponent(k) + '=' + encodeURIComponent(opt.qp[k]);
+      }
+    }
 
-    if (typeof opt.data === 'undefined') {
-      opt.data = json
+    const json = this.serialize()
+    
+    delete json['links'];
+    delete json['actions'];
+    delete json['actionLinks'];
+
+    if ( typeof opt.data === 'undefined' ) {
+      opt.data = json;
     }
 
     return this.request(opt).then(function(newData) {
-      if (!newData) {
+      if (!newData || ! (newData instanceof Type)) {
         return newData
       }
 
@@ -255,46 +254,44 @@ class Type extends Serializable {
       return self
     })
   }
-  delete(opt = {}) {
+  delete(opt) {
     const self = this;
     const store = this.store
     const type = this.type
 
+    opt = opt || {};
     opt.method = 'DELETE'
     opt.url = opt.url || this.linkFor('self')
 
     return this.request(opt).then(function(newData) {
-      if (store.removeAfterDelete || opt.forceRemove) {
+      if (store.removeAfterDelete || opt.forceRemove || opt.responseStatus === 204) {
         store._remove(type, self)
       }
       return newData
     })
   }
-  reload(opt = {}) {
+
+  reload(opt) {
     if (!this.hasLink('self')) {
       return Promise.reject('Resource has no self link');
     }
 
-    let url = this.linkFor('self')
-    if (this.constructor && this.constructor.alwaysInclude) {
-      this.constructor.alwaysInclude.forEach(function(key) {
-        url += (url.indexOf('?') >= 0 ? '&' : '?') + 'include=' + encodeURIComponent(key)
-      })
-    }
-    if (!'undefined') {
-      opt.method = 'GET'
+    var url = this.linkFor('self');
+
+    opt = opt || {};
+    if ( typeof opt.method === 'undefined' ) {
+      opt.method = 'GET';
     }
 
-    if (!opt.url) {
-      opt.url = url
+    if ( typeof opt.url === 'undefined' ) {
+      opt.url = url;
     }
 
-    const self = this
+    var self = this;
     return this.request(opt).then(function(/*newData*/) {
-      return self
-    })
+      return self;
+    });
   }
-
   isInStore() {
     const store = this.store
     return store && this.id && this.type && store.hasRecord(this)

@@ -22,11 +22,11 @@ class Collection {
     })
   }
 
-  first() {
+  get firstObject() {
     return this.content[0]
   }
 
-  last() {
+  get lastObject() {
     return this.content[this.content.length - 1]
   }
 
@@ -38,12 +38,12 @@ class Collection {
     return this.content[method](...args)
   }
 
-  length() {
+  get length() {
     return this.content.length
   }
 
   toString() {
-    return `connection:${this.resourceType}[${this.length()}]`
+    return `collection:${this.resourceType}[${this.length()}]`
   }
 
   request(opt) {

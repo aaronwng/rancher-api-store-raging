@@ -1,86 +1,83 @@
-const reservedKeys = [
-  'reservedKeys',
-  'includedKeys',
-  'store',
-]
-
 class Serializable {
-  serialize(depth = 0) {
-    let output
-    if (depth > 10) {
-      return null
+  serialize(depth) {
+    depth = depth || 0;
+    var output;
+
+    if ( depth > 10 )
+    {
+      return null;
     }
 
-    if (Array.isArray(this)) {
-      output = this.map((item) => {
-        return recurse(item, depth+1)
-      })
+    if ( Array.isArray(this) )
+    {
+      output = this.map(function(item) {
+        return recurse(item,depth+1);
+      });
     }
-    else {
-      output = {}
-      this.eachKeys((v,k) => {
-        output[k] = recurse(v,depth+1)
-      })
+    else
+    {
+      output = {};
+      this.eachKeys(function(v,k) {
+        output[k] = recurse(v,depth+1);
+      });
     }
 
-    return output
+    return output;
 
-    function recurse(obj, depth = 0) {
-      if (depth > 10) {
-        return null
+    function recurse(obj,depth) {
+      depth = depth || 0;
+      if ( depth > 10 )
+      {
+        return null;
       }
 
-      if (Array.isArray(obj)) {
-        return obj.map(item => {
-          return recurse(item, depth+1)
-        })
+      if ( Array.isArray(obj) )
+      {
+        return obj.map(function(item) {
+          return recurse(item, depth+1);
+        });
       }
-      else if (obj instanceof Serializable) {
-        return obj.serialize(depth+1)
+      else if ( obj instanceof Serializable)
+      {
+        return obj.serialize(depth);
       }
-      else if (obj && typeof obj === 'object') {
-        const out = {}
-        const keys = Object.keys(obj)
+      else if ( obj && typeof obj === 'object' )
+      {
+        var out = {};
+        var keys = Object.keys(obj);
         keys.forEach(function(k) {
-          out[k] = recurse(obj[k], depth+1)
-        })
-        return out
-      } else {
-        return obj
+          out[k] = recurse(obj[k], depth+1);
+        });
+        return out;
+      }
+      else
+      {
+        return obj;
       }
     }
   }
 
-  allKeys(withIncludes) {
+  // Properties to ignore because they're built-in to ember, ember-debug, or the store
+  concatenatedProperties = ['reservedKeys']
+  reservedKeys = ['reservedKeys','constructor','container','store','isInstance','isDestroyed','isDestroying','concatenatedProperties','cache','factoryCache','validationCache','store']
 
-    const reserved = [
-      ...reservedKeys,
-      ...(this.constructor.reservedKeys || []),
-      ...(this.reservedKeys || [])
-    ]
+  allKeys() {
+    var reserved = this.reservedKeys;
 
-    let alwaysIncluded = []
-    if (withIncludes === false) {
-      alwaysIncluded = this.constructor.alwaysInclude || []
-    }
-
-    const thisIncluded = this.includedKeys || []
-
-    const out = Object.keys(this).filter(k => {
+    var out = Object.keys(this).filter((k) => {
       return k.charAt(0) !== '_' &&
         reserved.indexOf(k) === -1 &&
-        alwaysIncluded.indexOf(k) === -1 &&
-        thisIncluded.indexOf(k) === -1 &&
-        typeof this[k] !== 'function'
-    })
+        typeof this[k] !== 'function';
+    });
 
-    return out
+    return out;
   }
 
-  eachKeys(fn, withIncludes) {
-    this.allKeys(withIncludes).forEach(k => {
-      fn.call(this, this[k], k)
-    })
+  eachKeys(fn) {
+    var self = this;
+    this.allKeys().forEach(function(k) {
+      fn.call(self, self[k], k);
+    });
   }
 }
 

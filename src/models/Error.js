@@ -5,6 +5,9 @@ class Error extends Resource {
     super(...args)
     this.type = 'error'
   }
+  toString() {
+    return JSON.stringify(this)
+  }
 }
 
 export default Error

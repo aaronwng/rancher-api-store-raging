@@ -1,8 +1,9 @@
-import merge from 'lodash/merge'
 import Serializable from './Serializable'
 import {normalizeType} from '../utils/normalize'
+import { applyHeaders } from '../utils/apply-headers';
 import urlOptions from '../utils/urlOptions'
 import createHttp from '../utils/createHttp'
+import fetch from '../utils/fetch';
 
 // build-in Models
 import Resource  from '../models/Resource'
@@ -11,8 +12,7 @@ import Schema  from '../models/Schema'
 import Collection  from '../models/Collection'
 
 export const defaultMetaKeys = [
-  'type',
-  'actions',
+  'actionLinks',
   'createDefaults',
   'createTypes',
   'filters',
@@ -21,7 +21,9 @@ export const defaultMetaKeys = [
   'resourceType',
   'sort',
   'sortLinks',
-]
+  'type'
+];
+
 
 export const neverMissing = [
   'error',
@@ -33,6 +35,16 @@ let count = 0
 class Store {
   static __stores = {}
   static headers = {}
+  reopen(opt = {}) {
+    Object.entries(opt).forEach(([k, v]) => {
+      this[k] = v
+    })
+  }
+  generation = 0
+  defaultTimeout = 30000
+  defaultPageSize = 1000
+  baseUrl = '/v1'
+  metaKeys = null
   constructor(name, opt) {
 
     if (typeof name ==='string') {
@@ -69,6 +81,10 @@ class Store {
       this.neverMissing = neverMissing.slice()
     }
 
+     if (!this.metaKeys)
+    {
+      this.metaKeys = defaultMetaKeys.slice();
+    }
     // Registering build-in Models
     this.registerModel('schema', Schema)
     this.registerModel('resource', Resource)
@@ -78,10 +94,16 @@ class Store {
     this._state = {
       cache: {},
       cacheMap: {},
+      shoebox: null,
+      classCache: null,
       foundAll: {},
       findQueue: {},
       missingMap: {},
+      watchHasMany: null,
+      watchReference: null,
+      missingReference: null,
     }
+    this.reset();
   }
 
   modelFor(type) {
@@ -235,52 +257,216 @@ class Store {
       entries.clear()
     }
   }
+  // Get the shoebox group for [type]
+  _shoebox(type) {
+    type = normalizeType(type, this);
+    var box = this._state.shoebox;
+    if ( !box ) {
+      return null;
+    }
+
+    var group = box[type];
+    if ( !group ) {
+      group = {};
+      box[type] = group;
+    }
+
+    return group;
+  }
+
   // Add a record instance of [type] to cache
   _add(type, obj) {
-    type = normalizeType(type)
-    const group = this._group(type)
-    const groupMap = this._groupMap(type)
-    group.push(obj)
-    groupMap[obj.id] = obj
+    type = normalizeType(type, this);
+    const id = obj.id;
+    const group = this._group(type);
+    const groupMap = this._groupMap(type);
+    const shoebox = this._shoebox(type);
 
-    if (obj.wasAdded && typeof obj.wasAdded === 'function') {
-      obj.wasAdded()
+    group.push(obj);
+    groupMap[obj.id] = obj;
+
+    if ( shoebox ) {
+      shoebox[obj.id] = obj.serialize();
+    }
+
+    // // Update hasMany relationships
+    // const watches = this._state.watchHasMany[type]||[];
+    // const notify = [];
+
+    // let watch, val;
+    // for ( let i = 0 ; i < watches.length ; i++ ) {
+    //   watch = watches[i];
+    //   val = obj.get(watch.targetField);
+    //   notify.push({type: watch.thisType, id: val, field: watch.thisField, sourceStore: watch.sourceStore});
+    // }
+
+    // // Update references relationships that have been looking for this resource
+    // const key = type+':'+id;
+    // const missings = this._state.missingReference[key];
+    // if ( missings ) {
+    //   notify.push(missings);
+    //   delete this._state.missingReference[key];
+    // }
+
+    // this.notifyFieldsChanged(notify);
+
+    if ( obj.wasAdded && typeof obj.wasAdded === 'function' ) {
+      obj.wasAdded();
     }
   }
+
   // Add a lot of instances of the same type quickly.
-  //  - There must be a model for the type already defined.
-  //  - Instances cannot contain any nested other types (e.g. include or subtypes),
-  //     (they will not be deserialzed into their correct type.)
-  //  - wasAdded hooks are not called
-  //  - Basically this is just for loading schemas faster.
+  //   - There must be a model for the type already defined.
+  //   - Instances cannot contain any nested other types (e.g. subtypes),
+  //     (they will not be deserialized into their correct type.)
+  //   - wasAdded hooks are not called
+  // Basically this is just for loading schemas faster.
   _bulkAdd(type, pojos) {
-    type = normalizeType(type)
-    const group = this._group(type)
-    const groupMap = this._groupMap(type)
-    const Model = this.modelFor(type)
-    group.concat(pojos.map(input=>  {
-      // Schemas are special
-      if (type === 'schema') {
-        input._id = input.id
-        input.id = normalizeType(input.id)
+    type = normalizeType(type, this);
+    const group = this._group(type);
+    const groupMap = this._groupMap(type);
+    const shoebox = this._shoebox(type);
+    const cls = getOwner(this).lookup('model:'+type);
+    group.push(pojos.map((input)=>  {
+
+      // actions is very unhappy property name for Ember...
+      if ( this.replaceActions && typeof input.actions !== 'undefined')
+      {
+        input[this.replaceActions] = input.actions;
+        delete input.actions;
       }
-      const obj =  new Model(input)
-      groupMap[obj.id] = obj
-      return obj
-    }))
+
+      // Schemas are special
+      if ( type === 'schema' ) {
+        input._id = input.id;
+        input.id = normalizeType(input.id, this);
+      }
+
+      input.store = this;
+      let obj =  cls.constructor.create(input);
+      groupMap[obj.id] = obj;
+
+      if ( shoebox ) {
+        shoebox[obj._id || obj.id] = obj.serialize();
+      }
+
+      return obj;
+    }));
   }
+
   // Remove a record of [type] from cache, given the id or the record instance.
   _remove(type, obj) {
-    type = normalizeType(type)
-    const group = this._group(type)
-    const groupMap = this._groupMap(type)
-    const idx = group.indexOf(obj);
-    if (idx !== -1) {
-      group.splice(idx, 1);
+    type = normalizeType(type, this);
+    const id = obj.id;
+    const group = this._group(type);
+    const groupMap = this._groupMap(type);
+    const shoebox = this._shoebox(type);
+
+    group.removeObject(obj);
+    delete groupMap[id];
+
+    if ( shoebox ) {
+      delete shoebox[id];
     }
-    delete groupMap[obj.id]
-    if (obj.wasRemoved && typeof obj.wasRemoved === 'function') {
-      obj.wasRemoved()
+
+    // // Update hasMany relationships that refer to this resource
+    // const watches = this._state.watchHasMany[type]||[];
+    // const notify = [];
+    // let watch;
+    // for ( let i = 0 ; i < watches.length ; i++ ) {
+    //   watch = watches[i];
+    //   notify.push({
+    //     type: watch.thisType,
+    //     id: obj.get(watch.targetField),
+    //     field: watch.thisField
+    //   });
+    // }
+
+    // // Update references relationships that have used this resource
+    // const key = type+':'+id;
+    // const existing = this._state.watchReference[key];
+    // if ( existing ) {
+    //   notify.push(existing);
+    //   delete this._state.watchReference[key];
+    // }
+
+    // this.notifyFieldsChanged(notify);
+
+    if ( obj.wasRemoved && typeof obj.wasRemoved === 'function' ) {
+      obj.wasRemoved();
+    }
+
+    // If there's a different baseType, remove that one too
+    const baseType = normalizeType(obj.baseType, this);
+    if ( baseType && type !== baseType ) {
+      this._remove(baseType, obj);
+    }
+  }
+
+  // Turn a POJO into a Model: {updateStore: true}
+  _typeify(input, opt=null) {
+    if ( !input || typeof input !== 'object') {
+      // Simple values can just be returned
+      return input;
+    }
+
+    if ( !opt ) {
+      opt = {applyDefaults: false};
+    }
+
+    let type = input.type;
+    if ( isArray(input) ) {
+      // Recurse over arrays
+      return input.map(x => this._typeify(x, opt));
+    } else if ( !type ) {
+      // If it doesn't have a type then there's no sub-fields to typeify
+      return input;
+    }
+
+    type = normalizeType(type, this);
+    if ( type === 'collection') {
+      return this.createCollection(input, opt);
+    } else if ( !type ) {
+      return input;
+    }
+
+    let rec = this.createRecord(input, opt);
+    if ( !input.id || opt.updateStore === false ) {
+      return rec;
+    }
+
+    // This must be after createRecord so that mangleIn() can change the baseType
+    let baseType = normalizeType(rec.get('baseType'), this);
+    if ( baseType ) {
+      // Only use baseType if it's different from type
+      if ( baseType === type ) {
+        baseType = null;
+      }
+    }
+
+    let out = rec;
+    this._add(type, rec);
+
+    if ( baseType ) {
+      this._add(baseType, rec);
+    }
+    return out;
+  }
+
+  notifyFieldsChanged(ary) {
+    let entry, tgt;
+    for ( let i = 0 ; i < ary.length ; i++ ) {
+      entry = ary[i];
+      if ( entry.sourceStore ) {
+        tgt = entry.sourceStore.getById(entry.type, entry.id);
+      } else {
+        tgt = this.getById(entry.type, entry.id);
+      }
+
+      if ( tgt ) {
+        //console.log('Notify', entry.type, entry.id, 'that', entry.field,'changed');
+        tgt.notifyPropertyChange(entry.field);
+      }
     }
   }
   isCacheable(opt) {
@@ -288,35 +474,52 @@ class Store {
   }
   // Forget about all the resources that hae been previously remembered.
   reset() {
-    const cache = this._state.cache
-    if (cache) {
-      Object.keys(cache).forEach(key => {
-        if (cache[key] && cache[key].clear) {
+    const state = this._state;
+
+    var cache = state.cache;
+    if ( cache ) {
+      Object.keys(cache).forEach((key) => {
+        if ( cache[key] && cache[key].clear ) {
           cache[key].clear();
         }
-      })
+      });
     } else {
-      this._state.cache = {}
+      state.cache = {};
     }
 
-    const foundAll = this._state.foundAll
-    if (foundAll) {
-      Object.keys(foundAll).forEach(key => {
-        foundAll[key] = false
-      })
+    var foundAll = state.foundAll;
+    if ( foundAll ) {
+      Object.keys(foundAll).forEach((key) => {
+        foundAll[key] = false;
+      });
     } else {
-      this._state.foundAll = {}
+      state.foundAll = {};
     }
-    this._state.cacheMap = {}
-    this._state.findQueue = {}
-    this._state.missingMap = {}
+
+    if ( state.shoebox ) {
+      state.shoebox = {};
+    }
+
+    state.cacheMap = {};
+    state.findQueue = {};
+    state.classCache = [];
+    state.watchHasMany = {};
+    state.watchReference = {};
+    state.missingReference = {};
+    this.generation +=1 ;
   }
+
   resetType(type) {
-    type = normalizeType(type)
-    const group = this._group(type)
-    this._state.foundAll[type] = false
-    this._state.cacheMap[type] = {}
-    group.clear()
+    type = normalizeType(type, this);
+    var group = this._group(type);
+    this._state.foundAll[type] = false;
+    this._state.cacheMap[type] = {};
+
+    if ( this._state.shoebox ) {
+      this._state.shoebox[type] = {};
+    }
+
+    group.clear();
   }
   // Asynchronous, returns promise.
   // find(type[,null, opt]): Query API for all records of [type]
@@ -329,142 +532,191 @@ class Store {
   //  depaginate: If the response is paginated, retrieve all the pages. (default: true)
   //  headers: Headers to send in the request (default: none).  Also includes ones specified in the model constructor.
   //  url: Use this specific URL instead of looking up the URL for the type/id.  This should only be used for bootstrap
-  find(type, id, opt = {}) {
-    type = normalizeType(type)
-    opt.depaginate = opt.depaginate !== false
-    if (!id && !opt.limit) {
+  find(type, id, opt) {
+    type = normalizeType(type, this);
+    opt = opt || {};
+    opt.depaginate = opt.depaginate !== false;
+
+    if ( !id && !opt.limit ) {
       opt.limit = this.defaultPageSize;
     }
-    if (!type) {
-      return Promise.reject('type not specified')
+
+    if ( !type ) {
+      return Promise.reject(new Error({detail: 'type not specified'}));
     }
 
     // If this is a request for all of the items of [type], then we'll remember that and not ask again for a subsequent request
-    const isCacheable = this.isCacheable(opt)
-    opt.isForAll = !id && isCacheable
+    var isCacheable = this.isCacheable(opt);
+    opt.isForAll = !id && isCacheable;
+
     // See if we already have this resource, unless forceReload is on.
-    if (opt.forceReload !== true) {
-      if (opt.isForAll && this._state.foundAll[type]) {
-        return Promise.resolve(this.all(type))
-      } else if (isCacheable && id) {
-        const existing = this.getById(type, id)
-        if (existing) {
-          return Promise.resolve(existing)
+    if ( opt.forceReload !== true ) {
+      if ( opt.isForAll && this._state.foundAll[type] ) {
+        return Promise.resolve(this.all(type),'Cached find all '+type);
+      } else if ( isCacheable && id ) {
+        var existing = this.getById(type,id);
+        if ( existing ) {
+          return Promise.resolve(existing,'Cached find '+type+':'+id);
         }
       }
     }
-    // If URL is explicitly given, go straight to making the request.
+
+    // If URL is explicitly given, go straight to making the request.  Do not pass go, do not collect $200.
     // This is used for bootstraping to load the schema initially, and shouldn't be used for much else.
-    if (opt.url) {
-      return this._findWithUrl(opt.url, type, opt)
+    if ( opt.url ) {
+      return this._findWithUrl(opt.url, type, opt);
     } else {
       // Otherwise lookup the schema for the type and generate the URL based on it.
-      return this
-        .find('schema', type, {url: `schemas/${encodeURIComponent(type)}`})
-        .then(schema => {
-          const url = schema.linkFor('collection') + (id ? '/' + encodeURIComponent(id) : '')
-          return this._findWithUrl(url, type, opt)
-        })
+      return this.find('schema', type, {url: 'schemas/'+encodeURIComponent(type)}).then((schema) => {
+        if ( schema ) {
+          var url = schema.linkFor('collection') + (id ? '/'+encodeURIComponent(id) : '');
+          if ( url ) {
+            return this._findWithUrl(url, type, opt);
+          }
+        }
+
+        return Promise.reject(new Error({detail: 'Unable to find schema for "' + type + '"'}));
+      });
     }
   }
+
   _headers(perRequest) {
     const out = {
       'Accept': 'application/json',
       'Content-type': 'application/json',
     }
-    merge(out, Store.headers, this.headers, perRequest)
+    applyHeaders(this.headers, out);
+    applyHeaders(perRequest, out);
     return out
   }
-  rawRequest(opt) {
-    opt.headers = this._headers(opt.headers)
-    if (opt.data) {
-      if (opt.data instanceof Serializable) {
-        opt.data = JSON.stringify(opt.data.serialize())
-      } else if (typeof opt.data === 'object') {
-        opt.data = JSON.stringify(opt.data)
-      }
+
+  normalizeUrl(url, includingAbsolute=false) {
+    let origin;
+
+    // Make absolute URLs to ourselves root-relative
+    if ( includingAbsolute && url.indexOf(origin) === 0 ) {
+      url = url.substr(origin.length);
     }
 
-    const baseURL = opt.baseURL || this.baseURL || Store.baseURL
-
-    if (baseURL) {
-      opt.baseURL = baseURL
+    // Make relative URLs root-relative
+    if ( !url.match(/^https?:/) && url.indexOf('/') !== 0 ) {
+      url = this.baseUrl.replace(/\/\+$/,'') + '/' + url;
     }
 
-    return this.http.request(opt)
+    return url;
   }
-  _requestSuccess(response, opt) {
-    // 204 not content
-    if (response.status === 204) {
-      return
+  rawRequest(opt) {
+    opt.url = this.normalizeUrl(opt.url);
+    opt.headers = this._headers(opt.headers);
+    if ( typeof opt.dataType === 'undefined' ) {
+      opt.dataType = 'text'; // Don't let jQuery JSON parse
     }
-    if (response.data && typeof response.data === 'object') {
-      response = this._typeify(response.data)
-      delete response.data
-      Object.defineProperty(response, 'response', {value: response, configurable: true})
 
-      // Note which keys were included in each object
-      if (opt.include && opt.include.length && response.forEach) {
-        response.forEach((obj) => {
-          obj.includedKeys = obj.includedKeys || []
-          obj.includedKeys.concat(opt.include.slice())
-          obj.includedKeys = obj.includedKeys.uniq()
-        })
+    if ( opt.timeout !== null && !opt.timeout ) {
+      opt.timeout = this.defaultTimeout;
+    }
+
+    if ( opt.data ) {
+      if ( !opt.contentType ) {
+        opt.contentType = 'application/json';
       }
+
+      if ( opt.data instanceof Serializable) {
+        opt.data = JSON.stringify(opt.data.serialize());
+      } else if ( typeof opt.data === 'object' ) {
+        opt.data = JSON.stringify(opt.data);
+      }
+    }
+
+    const out = fetch(opt.url, opt);
+
+    return out;
+  }
+  _requestSuccess(xhr,opt) {
+    opt.responseStatus = xhr.status;
+
+    if ( xhr.status === 204 ) {
+      return;
+    }
+
+    if ( xhr.body && typeof xhr.body === 'object' ) {
+      let response = this._typeify(xhr.body);
+      delete xhr.body;
+      Object.defineProperty(response, 'xhr', {value: xhr, configurable: true});
 
       // Depaginate
-      if (opt.depaginate && typeof response.depaginate === 'function') {
-        return response.depaginate().then(() => {
-          return response
-        }).catch((response) => {
-          return this._requestFailed(response, opt)
-        })
+      if ( opt.depaginate && typeof response.depaginate === 'function' ) {
+        return response.depaginate().then(function() {
+          return response;
+        }).catch((xhr) => {
+          return this._requestFailed(xhr,opt);
+        });
       } else {
-        return response
+        return response;
       }
     } else {
-      return response.data
+      return xhr.body;
     }
   }
-  _requestFailed(error, opt = {}) {
-    let data
-    if (!error.data) {
-      data = {
-        status: error.status,
-        message: error.err,
-        detail: (opt.method || 'GET') + ' ' + opt.url,
+
+  _requestFailed(xhr,opt) {
+    var body;
+
+    if ( xhr.err ) {
+      if ( xhr.err === 'timeout' ) {
+        body = new Error({
+          code: 'Timeout',
+          status: xhr.status,
+          message: `API request timeout (${opt.timeout/1000} sec)`,
+          detail: (opt.method||'GET') + ' ' + opt.url,
+        });
+      } else {
+        body = new Error({
+          code: 'Xhr',
+          status: xhr.status,
+          message: xhr.err
+        });
       }
-      return finish(data)
-    } else if (error.data && typeof error.data === 'object' ) {
-      const out = finish(this._typeify(error.data))
-      return out
+
+      return finish(body);
+    } else if ( xhr.body && typeof xhr.body === 'object' ) {
+      let out = finish(this._typeify(xhr.body));
+
+      return out;
     } else {
-      data = {
-        status: error.status,
-        message: error.data,
-      }
-      return finish(data)
+      body = new Error({
+        status: xhr.status,
+        message: xhr.body || xhr.message,
+      });
+
+      return finish(body);
     }
 
-    function finish(data) {
-      delete error.data;
-      Object.defineProperty(data, 'error', {value: error, configurable: true});
-      return Promise.reject(data);
+    function finish(body) {
+      if ( !( body instanceof Error )){
+        body = new Error(body);
+      }
+
+      delete xhr.body;
+      Object.defineProperty(body, 'xhr', {value: xhr, configurable: true});
+      return Promise.reject(body);
     }
   }
+
   // Makes an AJAX request that resolves to a resource model
   request(opt) {
-    opt.depaginate = opt.depaginate !== false
+    opt.url = this.normalizeUrl(opt.url);
+    opt.depaginate = opt.depaginate !== false;
 
-    if (this.mungeRequest) {
-      opt = this.mungeRequest(opt)
+    if ( this.mungeRequest ) {
+      opt = this.mungeRequest(opt);
     }
 
-    return this.rawRequest(opt).then(res => {
-      return this._requestSuccess(res, opt)
-    }).catch(error => {
-      return this._requestFailed(error, opt)
-    })
+    return this.rawRequest(opt).then((xhr) => {
+      return this._requestSuccess(xhr,opt);
+    }).catch((xhr) => {
+      return this._requestFailed(xhr,opt);
+    });
   }
 
   _findWithUrl(url, type, opt) {
@@ -475,9 +727,9 @@ class Store {
     // Collect Headers
     const newHeaders = {}
     if (Model && Model.headers) {
-      merge(newHeaders, Model.headers)
+      applyHeaders(Model.headers, newHeaders, true)
     }
-    merge(newHeaders, opt.headers)
+    applyHeaders(opt.headers, newHeaders, true)
     // End: Collect headers
 
     let later
@@ -518,10 +770,10 @@ class Store {
         }
         this._finishFind(queueKey, result, 'resolve')
         return result
-      }/*, reason => {
+      }, reason => {
         this._finishFind(queueKey, reason, 'reject')
         return Promise.reject(reason)
-      }*/)
+      })
       // set the queue array to empty indicating we've had 1 promise already
       queue[queueKey] = []
     }
@@ -640,12 +892,12 @@ class Store {
         this._add(baseType, rec)
       }
     }
-    if (type && !this.neverMissing.includes(type)) {
-      this._notifyMissing(type, rec.id)
-      if (baseType && !this.neverMissing.includes(type)) {
-        this._notifyMissing(baseType, rec.id)
-      }
-    }
+    // if (type && !this.neverMissing.includes(type)) {
+    //   this._notifyMissing(type, rec.id)
+    //   if (baseType && !this.neverMissing.includes(type)) {
+    //     this._notifyMissing(baseType, rec.id)
+    //   }
+    // }
     return out
   }
 }
