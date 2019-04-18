@@ -34,10 +34,15 @@ let count = 0
 
 class Store {
   static __stores = {}
-  static headers = {}
+  headers = null
   reopen(opt = {}) {
     Object.entries(opt).forEach(([k, v]) => {
-      this[k] = v
+      let getter = opt.__lookupGetter__(k)
+      if(getter){
+        this.__defineGetter__(k,getter)
+      }else{
+        this[k] = v
+      }
     })
   }
   generation = 0
