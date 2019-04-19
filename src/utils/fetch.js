@@ -1,7 +1,6 @@
 import 'whatwg-fetch'
 
 const _fetch = window.fetch
-const reject = Promise.reject
 
 export function fetch(url,opt) {
   opt = opt || {};
@@ -51,12 +50,10 @@ function respond(res, body) {
     statusText: res.statusText,
     headers: res.headers
   };
-
-  if (res.ok) {
-    return out;
-  } else {
-    return reject(out);
+  if(res.ok){
+    return out
   }
+  return Promise.reject(out)
 }
 
 export default fetch;
