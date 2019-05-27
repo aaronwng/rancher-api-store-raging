@@ -331,7 +331,7 @@ class Store {
     const group = this._group(type);
     const groupMap = this._groupMap(type);
     const shoebox = this._shoebox(type);
-    const cls = getOwner(this).lookup('model:'+type);
+    const Model = this.modelFor(type);
     group.push(pojos.map((input)=>  {
 
       // actions is very unhappy property name for Ember...
@@ -348,7 +348,7 @@ class Store {
       }
 
       input.store = this;
-      let obj =  cls.constructor.create(input);
+      let obj = new Model(input);
       groupMap[obj.id] = obj;
 
       if ( shoebox ) {
