@@ -259,7 +259,7 @@ class Store {
       entries.forEach((entry) => {
         entry.o.notifyPropertyChange(entry.k)
       })
-      entries.clear()
+      entries.length = 0
     }
   }
   // Get the shoebox group for [type]
@@ -484,8 +484,8 @@ class Store {
     var cache = state.cache;
     if ( cache ) {
       Object.keys(cache).forEach((key) => {
-        if ( cache[key] && cache[key].clear ) {
-          cache[key].clear();
+        if ( cache[key] && cache[key].length ) {
+          cache[key].length = 0;
         }
       });
     } else {
@@ -524,7 +524,7 @@ class Store {
       this._state.shoebox[type] = {};
     }
 
-    group.clear();
+    group.length = 0;
   }
   // Asynchronous, returns promise.
   // find(type[,null, opt]): Query API for all records of [type]

@@ -2,6 +2,8 @@ import Serializable from './Serializable'
 import {normalizeType} from '../utils/normalize'
 import { copyHeaders } from '../utils/apply-headers'
 import urlOptions from '../utils/urlOptions'
+import {get, set} from '../utils/util'
+import {resolve, reject} from 'Promise'
 
 class Type extends Serializable {
   static reopenClass(opt = {}) {
@@ -17,35 +19,12 @@ class Type extends Serializable {
     this.schema = null
   }
 
+  id = null
+  type = null
+  links = null
+
   toString() {
-    return '[Generic type class]'
-  }
-
-  getSchema() {
-    return this.store.getById('schema', this.type);
-  }
-  optionsFor(field) {
-    const s = this.getSchema()
-    if (!s) {
-      return []
-    }
-    return s.optionsFor(field)
-  }
-
-  getDefault(field) {
-    const s = this.getSchema()
-    if (!s) {
-      return []
-    }
-    return s.getDefault(field)
-  }
-
-  isRequired(field) {
-    const s = this.getSchema()
-    if (!s) {
-      return []
-    }
-    return s.isRequired(field)
+    return '(generic store type mixin)';
   }
 
   // unionArrays=true will append the new values to the existing ones instead of overwriting.
@@ -58,7 +37,7 @@ class Type extends Serializable {
         if ( unionArrays && Array.isArray(curVal) && Array.isArray(v) ) {
           curVal.addObjects(v);
         } else {
-          self[k] =  v;
+          self[k] = v;
         }
       }
     });
@@ -78,7 +57,7 @@ class Type extends Serializable {
     this.eachKeys(function(v, k) {
       // If the key is a valid link name and
       if ( newKeys.indexOf(k) === -1 && !this.hasLink(k) ) {
-        self[k] = undefined
+        self[k] = undefined;
       }
     });
 
@@ -86,90 +65,77 @@ class Type extends Serializable {
   }
 
   clone() {
-    const store = this.store
-    const output = store.createRecord(
-      JSON.parse(JSON.stringify(this.serialize())),
-      {updateStore: false}
-    )
-    return output
+    let store = this.store;
+    let output = store.createRecord(JSON.parse(JSON.stringify(this.serialize())), {updateStore: false});
+    //output.set('store', get(this, 'store'));
+    return output;
   }
 
   linkFor(name) {
-    return this.links[name]
+    var url = get(this,'links.'+name);
+    return url;
+  }
+
+  pageFor(which) {
+    return get(this, `pagination.${which}`);
   }
 
   hasLink(name) {
-    return !!this.linkFor(name)
+    return !!this.linkFor(name);
   }
 
-  actionFor(name) {
-    return this.actions[name]
+  headers = null
+  request(opt) {
+    if ( !opt.headers ) {
+      opt.headers = {};
+    }
+
+    copyHeaders(this.constructor.headers, opt.headers);
+    copyHeaders(get(this, 'headers'), opt.headers);
+
+    return get(this, 'store').request(opt);
+  }
+
+  followPagination(which, opt) {
+    var url = this.pageFor(which);
+
+    if (!url) {
+      throw new Error('Unknown link');
+    }
+
+    opt = opt || {};
+    opt.url = url;
+    opt.depaginate = false;
+
+    return this.request(opt);
+  }
+
+  followLink(name, opt) {
+    var url = this.linkFor(name);
+    opt = opt || {};
+
+    if (!url) {
+      throw new Error('Unknown link');
+    }
+
+    opt.url = urlOptions(url, opt);
+
+    return this.request(opt);
   }
 
   hasAction(name) {
-    return !!this.actionFor(name)
+    var url = get(this, 'actionLinks.'+name);
+    return !!url;
   }
 
-  pageFor(name) {
-    return this.pagination[name]
-  }
-
-  request(opt) {
-    if (!opt.headers) {
-      opt.headers = {}
-    }
-    const headers = {}
-    copyHeaders(this.constructor.headers, opt.headers);
-    copyHeaders(this.headers, opt.headers);
-    return this.store.request({...opt, headers})
-  }
-
-  followPagination(name) {
-    const url = this.pageFor(name);
-
-    if (!url) {
-      throw new Error('Unknown link')
-    }
-
-    return this.request({
-      method: 'GET',
-      url: url,
-      depaginate: false,
-    })
-  }
-
-  followLink(name, opt = {}) {
-    let url = this.linkFor(name)
-
-    if (!url) {
-      throw new Error('Unknown link')
-    }
-
-    url = urlOptions(url, opt, this.constructor)
-
-    return this.request({
-      method: 'GET',
-      url,
-    })
-  }
-
-  importLink(name, opt = {}) {
-    const self = this
-
-    return new Promise(function(resolve,reject) {
-      self.followLink(name, opt).then(function(data) {
-        self[opt.as || name] =  data
-        resolve(self)
-      }).catch(function(err) {
-        reject(err)
-      })
-    })
+  computedHasAction(name) {
+    return this.hasAction(name);
   }
 
   doAction(name, data, opt) {
-    var url = this.actionFor(name);
+    var url = get(this, 'actionLinks.'+name);
     if (!url) {
-      return Promise.reject(new Error('Unknown action: ' + name));
+      return reject(new Error('Unknown action: ' + name));
     }
 
     opt = opt || {};
@@ -184,24 +150,24 @@ class Type extends Serializable {
   }
 
   save(opt) {
-    const self = this
-    const store = this.store
+    var self = this;
+    var store = get(this, 'store');
     opt = opt || {};
 
-    const id = this.id
-    const type = normalizeType(this.type)
-    if (id) {
+    var id = get(this, 'id');
+    var type = normalizeType(get(this, 'type'));
+    if ( id ) {
       // Update
-      opt.method = opt.method || 'PUT'
-      opt.url = opt.url || this.linkFor('self')
+      opt.method = opt.method || 'PUT';
+      opt.url = opt.url || this.linkFor('self');
     } else {
       // Create
-      if (!type) {
-        return Promise.reject(new Error('Cannot create record without a type'));
+      if ( !type ) {
+        return reject(new Error('Cannot create record without a type'));
       }
 
-      opt.method = opt.method || 'POST'
-      opt.url = opt.url || type
+      opt.method = opt.method || 'POST';
+      opt.url = opt.url || type;
     }
 
     if ( opt.qp ) {
@@ -210,8 +176,8 @@ class Type extends Serializable {
       }
     }
 
-    const json = this.serialize()
-    
+    var json = this.serialize();
+
     delete json['links'];
     delete json['actions'];
     delete json['actionLinks'];
@@ -221,59 +187,61 @@ class Type extends Serializable {
     }
 
     return this.request(opt).then(function(newData) {
-      if (!newData || ! (newData instanceof Type)) {
-        return newData
+      if ( !newData || !(newData instanceof Type)) {
+        return newData;
       }
 
-      const newId = newData.id
-      const newType = normalizeType(newData.type)
-      if (!id && newId && type === newType) {
+      var newId = newData.get('id');
+      var newType = normalizeType(newData.get('type'));
+      if ( !id && newId && type === newType ) {
+
         // A new record was created.  Typeify will have put it into the store,
         // but it's not the same instance as this object.  So we need to fix that.
-        self.merge(newData)
-        let existing = store.getById(type, newId)
-        if (existing) {
-          store._remove(type, existing)
+        self.merge(newData);
+        var existing = store.getById(type,newId);
+        if ( existing ) {
+          store._remove(type, existing);
         }
-        store._add(type, self)
+        store._add(type, self);
 
         // And also for the base type
-        let baseType = self.baseType
-        if (baseType) {
-          baseType = normalizeType(baseType)
-          if (baseType !== type) {
-            existing = store.getById(baseType,newId)
-            if (existing) {
-              store._remove(baseType, existing)
+        var baseType = self.get('baseType');
+        if ( baseType ) {
+          baseType = normalizeType(baseType);
+          if ( baseType !== type ) {
+            existing = store.getById(baseType,newId);
+            if ( existing ) {
+              store._remove(baseType, existing);
             }
-            store._add(baseType, self)
+            store._add(baseType, self);
           }
         }
       }
 
-      return self
-    })
+      return self;
+    });
   }
+
   delete(opt) {
-    const self = this;
-    const store = this.store
-    const type = this.type
+    var self = this;
+    var store = get(this, 'store');
+    var type = get(this, 'type');
 
     opt = opt || {};
-    opt.method = 'DELETE'
-    opt.url = opt.url || this.linkFor('self')
+    opt.method = 'DELETE';
+    opt.url = opt.url || this.linkFor('self');
 
     return this.request(opt).then(function(newData) {
-      if (store.removeAfterDelete || opt.forceRemove || opt.responseStatus === 204) {
-        store._remove(type, self)
+      if ( store.get('removeAfterDelete') || opt.forceRemove || opt.responseStatus === 204 ) {
+        store._remove(type, self);
       }
-      return newData
-    })
+      return newData;
+    });
   }
 
   reload(opt) {
-    if (!this.hasLink('self')) {
-      return Promise.reject('Resource has no self link');
+    if ( !this.hasLink('self') ) {
+      return reject('Resource has no self link');
     }
 
     var url = this.linkFor('self');
@@ -292,9 +260,10 @@ class Type extends Serializable {
       return self;
     });
   }
+
   isInStore() {
-    const store = this.store
-    return store && this.id && this.type && store.hasRecord(this)
+    var store = get(this, 'store');
+    return store && get(this, 'id') && get(this, 'type') && store.hasRecord(this);
   }
 }
 

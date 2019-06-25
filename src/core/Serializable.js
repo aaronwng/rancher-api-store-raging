@@ -76,8 +76,19 @@ class Serializable {
   eachKeys(fn) {
     var self = this;
     this.allKeys().forEach(function(k) {
-      fn.call(self, self[k], k);
+      fn.call(self, self.get(k), k);
     });
+  }
+
+  get() {
+    let keys = arguments[0].split('.')
+    return keys.reduce((obj, key) => {
+      return obj[key]
+    }, this)
+  }
+
+  set() {
+    this[arguments[0]] = arguments[1]
   }
 }
 
