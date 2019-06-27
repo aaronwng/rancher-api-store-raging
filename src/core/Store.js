@@ -1,9 +1,10 @@
 import Serializable from './Serializable'
-import {normalizeType} from '../utils/normalize'
+import { normalizeType } from '../utils/normalize'
 import { applyHeaders } from '../utils/apply-headers';
 import urlOptions from '../utils/urlOptions'
 import createHttp from '../utils/createHttp'
 import fetch from '../utils/fetch';
+import { removeObject } from '../utils/util'
 
 // build-in Models
 import Resource  from '../models/Resource'
@@ -367,7 +368,7 @@ class Store {
     const groupMap = this._groupMap(type);
     const shoebox = this._shoebox(type);
 
-    group.removeObject(obj);
+    removeObject(group, obj);
     delete groupMap[id];
 
     if ( shoebox ) {
