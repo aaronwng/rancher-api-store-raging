@@ -3,7 +3,8 @@ import {normalizeType} from '../utils/normalize'
 import { copyHeaders } from '../utils/apply-headers'
 import urlOptions from '../utils/urlOptions'
 import {get, set} from '../utils/util'
-import {resolve, reject} from 'Promise'
+
+const {resolve, reject} = window.Promise
 
 class Type extends Serializable {
   static reopenClass(opt = {}) {
