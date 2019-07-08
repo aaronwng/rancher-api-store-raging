@@ -13,7 +13,7 @@ export function fetch(url,opt) {
     delete opt.data;
   }
 
-  return _fetch(url, opt).then(done);
+  return _fetch(decodeURIComponent(url), opt).then(done);
 }
 
 function done(res) {
