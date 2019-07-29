@@ -4,7 +4,7 @@ import { applyHeaders } from '../utils/apply-headers';
 import urlOptions from '../utils/urlOptions'
 import createHttp from '../utils/createHttp'
 import fetch from '../utils/fetch';
-import { removeObject } from '../utils/util'
+import { get, removeObject } from '../utils/util'
 
 // build-in Models
 import Resource  from '../models/Resource'
@@ -51,6 +51,12 @@ class Store {
   defaultPageSize = 1000
   baseUrl = '/v1'
   metaKeys = null
+  get () {
+    let keys = arguments[0].split('.')
+    return keys.reduce((obj, key) => {
+      return obj[key]
+    }, this)
+  }
   constructor(name, opt) {
 
     if (typeof name ==='string') {
