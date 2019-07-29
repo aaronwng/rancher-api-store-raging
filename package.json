@@ -9,7 +9,8 @@
     "lib",
     "es",
     "src",
-    "rollup.config.js"
+    "rollup.config.js",
+    ".babelrc"
   ],
   "scripts": {
     "dev": "cross-env BABEL_ENV=es NODE_ENV=es rollup -w -c -o es/index.js",
